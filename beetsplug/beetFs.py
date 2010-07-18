@@ -269,12 +269,10 @@ class InterpolatedID3 (ID3):
 
 class InterpolatedFLAC (FLAC):
 			def get_header(self, filename=None):
-				"""Save metadata blocks to a file.
-
-				If no filename is given, the one most recently loaded is used.
-				"""
-
-				if filename is None: filename = self.filename
+				
+				if filename == None:
+					filename = self.filename
+					
 				f = open(filename, 'rb+')
 
 				# Ensure we've got padding at the end, and only at the end.
@@ -286,11 +284,6 @@ class InterpolatedFLAC (FLAC):
 				available = self.__find_audio_offset(f) - header # "fLaC" and maybe ID3
 				data = MetadataBlock.writeblocks(self.metadata_blocks)
 
-				# Delete ID3v2
-				#if deleteid3 and header > 4:
-				#		available += header - 4
-				#		header = 4
-
 				if len(data) > available:
 						# If we have too much data, see if we can reduce padding.
 						padding = self.metadata_blocks[-1]
@@ -299,7 +292,7 @@ class InterpolatedFLAC (FLAC):
 								padding.length = newlength
 								data = MetadataBlock.writeblocks(self.metadata_blocks)
 								assert len(data) == available
-
+								
 				elif len(data) < available:
 						# If we have too little data, increase padding.
 						self.metadata_blocks[-1].length += (available - len(data))
@@ -313,10 +306,12 @@ class InterpolatedFLAC (FLAC):
 						
 				f.close()
 
+				self.__offset = len("fLaC" + data)
+
 				return("fLaC" + data)	 
 				
 			def offset(self):
-				return len(self.save())
+				return self.__offset
 				
 			def __find_audio_offset(self, fileobj):
 				byte = 0x00
@@ -399,8 +394,8 @@ class FileHandler(object):
 		subdepth = path.count('/') + 1
 			
 		# determine the real path
-		item = self.lib.items(query="id=%s" % directory_structure.getnode(pathsplit[0:structure_depth-1]).files[pathsplit[structure_depth-1]])
-		self.real_path = item.path
+		items = self.lib.get_path(id=directory_structure.getnode(pathsplit[0:structure_depth-1]).files[pathsplit[structure_depth-1]])
+		self.real_path = items[0]
 		
 		# open the on-disk file for reading
 		self.file_object = open(self.real_path, 'r+')
@@ -409,10 +404,10 @@ class FileHandler(object):
 		# now get the bounds of the file_class
 		#TODO: this needs to handle other file formats; use mutagen's detection procedure
 		format = os.path.splitext(path)[1][1:].lower()
-
+		#logging.info(self.real_path)
 		if format == "flac":
 			self.inf = InterpolatedFLAC(self.real_path)
-			self.header = self.inf.get_header()
+			self.header = self.inf.get_header(self.real_path)
 			self.bound = len(self.header)
 			self.music_offset = self.inf.offset()
 		elif format == "mp3":
@@ -515,6 +510,7 @@ class beetFileSystem(fuse.Fuse):
 				# called after filesystem is mounted
 				#self.lib = self.cmdline[1][0]
 				self.lib = library
+				self.files = {}
 
 				logging.info("Filesystem mounted")
 				
@@ -545,10 +541,7 @@ class beetFileSystem(fuse.Fuse):
 
 						if len(pathsplit) == structure_depth:
 							# it's a file						
-							logging.info("file")
-
 							items = self.lib.get_path(id=directory_structure.getnode(pathsplit[0:structure_depth-1]).files[pathsplit[structure_depth-1]])
-							logging.info("query")							
 							item = items[0]							
 
 							if not item:
@@ -867,6 +860,9 @@ class beetFileSystem(fuse.Fuse):
 				file_path = None
 				
 				try:
+					if self.files == None:
+						self.files = {"x":"y"}
+						
 					if path in self.files:
 						# get a file object
 						logging.info("Retrieving an existing File Handler for: %s" % path)
