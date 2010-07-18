@@ -168,11 +168,6 @@ def mount(lib, config, opts, args):
 			# do the actual add
 			directory_structure.addfile(sub_elements, level_subbed[structure_depth-1], item.id)
 			
-		#print directory_structure.listdir(["Fluke", "Hang Tough (381TP12) (2003) [MP3]"], False)
-		#path = "/.trash"
-		#pathsplit = path[1:].split('/')
-		#print pathsplit[len(pathsplit)-1] in directory_structure.getnode(pathsplit[0:len(pathsplit)-1]).dirs
-		#print directory_structure.getnode(pathsplit[0:len(pathsplit)-1]).dirs
 		server = beetFileSystem(version="%prog " + fuse.__version__,
 				usage="", dash_s_do='setsingle')
 		server.parse(errex=1)
