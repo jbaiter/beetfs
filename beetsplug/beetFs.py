@@ -394,8 +394,7 @@ class FileHandler(object):
 		subdepth = path.count('/') + 1
 			
 		# determine the real path
-		items = self.lib.get_path(id=directory_structure.getnode(pathsplit[0:structure_depth-1]).files[pathsplit[structure_depth-1]])
-		self.real_path = items[0]
+		self.real_path = self.lib.get_item(id=directory_structure.getnode(pathsplit[0:structure_depth-1]).files[pathsplit[structure_depth-1]]).path
 		
 		# open the on-disk file for reading
 		self.file_object = open(self.real_path, 'r+')
@@ -541,8 +540,7 @@ class beetFileSystem(fuse.Fuse):
 
 						if len(pathsplit) == structure_depth:
 							# it's a file						
-							items = self.lib.get_path(id=directory_structure.getnode(pathsplit[0:structure_depth-1]).files[pathsplit[structure_depth-1]])
-							item = items[0]							
+							item = self.lib.get_item(directory_structure.getnode(pathsplit[0:structure_depth-1]).files[pathsplit[structure_depth-1]]).path
 
 							if not item:
 								# file not found
@@ -603,7 +601,7 @@ class beetFileSystem(fuse.Fuse):
 						# if exists, always return allowed for directories
 						return 0
 				else:
-					item = self.lib.get_path(id=directory_structure.getnode(pathsplit[0:structure_depth-1]).files[pathsplit[structure_depth-1]])[0]
+					item = self.lib.get_item(id=directory_structure.getnode(pathsplit[0:structure_depth-1]).files[pathsplit[structure_depth-1]]).path
 					if not item:
 						return -errno.EACCES			
 					else:
@@ -959,7 +957,6 @@ class beetFileSystem(fuse.Fuse):
 					except:
 						return -errno.EPERM
 		
-				
 				return self.files[path].read(size, offset)
 			 
 		def write(self, path, buf, offset, fh=None):
