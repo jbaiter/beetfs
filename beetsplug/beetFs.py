@@ -410,7 +410,7 @@ class FileHandler(object):
 			self.bound = len(self.header)
 			self.music_offset = self.inf.offset()
 		elif format == "mp3":
-			pass
+			self.bound = 0 # disable interpolation for now
 		
 	def open(self):
 		# as init() handles actual opening, just increment instance count here
