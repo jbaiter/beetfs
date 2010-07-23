@@ -393,8 +393,9 @@ class FileHandler(object):
 		pathsplit = path[1:].split('/')		
 		subdepth = path.count('/') + 1
 			
-		# determine the real path
-		self.real_path = self.lib.get_item(id=directory_structure.getnode(pathsplit[0:structure_depth-1]).files[pathsplit[structure_depth-1]]).path
+		# determine the item and real path
+		self.item = self.lib.get_item(id=directory_structure.getnode(pathsplit[0:structure_depth-1]).files[pathsplit[structure_depth-1]])
+		self.real_path = self.item.path
 		
 		# open the on-disk file for reading
 		self.file_object = open(self.real_path, 'r+')
@@ -406,6 +407,14 @@ class FileHandler(object):
 		#logging.info(self.real_path)
 		if format == "flac":
 			self.inf = InterpolatedFLAC(self.real_path)
+			
+			# get values from database
+			self.inf["title"] = self.item.title
+			self.inf["album"] = self.item.album
+			self.inf["artist"] = self.item.artist
+			self.inf["genre"] = self.item.genre
+			self.inf["track"] = self.item.track
+			
 			self.header = self.inf.get_header(self.real_path)
 			self.bound = len(self.header)
 			self.music_offset = self.inf.offset()
