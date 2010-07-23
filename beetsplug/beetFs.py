@@ -26,6 +26,7 @@ import logging
 from string import Template
 import operator
 import os
+import tempfile
 import re
 import fuse
 import errno
@@ -35,8 +36,10 @@ import time
 import calendar
 import mutagen
 from mutagen import flac, id3
-from mutagen.flac import FLAC, Padding, MetadataBlock
+from mutagen.flac import FLAC, Padding, MetadataBlock, VCFLACDict, CueSheet, SeekTable, FLACNoHeaderError
 from mutagen.id3 import ID3
+import io
+from io import BytesIO
 
 path_format = "$artist/$album ($year) [$format_upper]/$track - $artist - $title.$format"
 
@@ -198,82 +201,129 @@ def to_int_be(string):
 	return reduce(lambda a, b: (a << 8) + ord(b), string, 0L)
 
 class InterpolatedID3 (ID3):
-    def save(self, filename=None, v1=0):
-        """Save changes to a file.
+		def save(self, filename=None, v1=0):
+				"""Save changes to a file.
 
-        If no filename is given, the one most recently loaded is used.
+				If no filename is given, the one most recently loaded is used.
 
-        Keyword arguments:
-        v1 -- if 0, ID3v1 tags will be removed
-              if 1, ID3v1 tags will be updated but not added
-              if 2, ID3v1 tags will be created and/or updated
+				Keyword arguments:
+				v1 -- if 0, ID3v1 tags will be removed
+							if 1, ID3v1 tags will be updated but not added
+							if 2, ID3v1 tags will be created and/or updated
 
-        The lack of a way to update only an ID3v1 tag is intentional.
-        """
+				The lack of a way to update only an ID3v1 tag is intentional.
+				"""
 
-        # Sort frames by 'importance'
-        order = ["TIT2", "TPE1", "TRCK", "TALB", "TPOS", "TDRC", "TCON"]
-        order = dict(zip(order, range(len(order))))
-        last = len(order)
-        frames = self.items()
-        frames.sort(lambda a, b: cmp(order.get(a[0][:4], last),
-                                     order.get(b[0][:4], last)))
+				# Sort frames by 'importance'
+				order = ["TIT2", "TPE1", "TRCK", "TALB", "TPOS", "TDRC", "TCON"]
+				order = dict(zip(order, range(len(order))))
+				last = len(order)
+				frames = self.items()
+				frames.sort(lambda a, b: cmp(order.get(a[0][:4], last),
+																		 order.get(b[0][:4], last)))
 
-        framedata = [self.__save_frame(frame) for (key, frame) in frames]
-        framedata.extend([data for data in self.unknown_frames
-                if len(data) > 10])
-        
+				framedata = [self.__save_frame(frame) for (key, frame) in frames]
+				framedata.extend([data for data in self.unknown_frames
+								if len(data) > 10])
+				
 
-        framedata = ''.join(framedata)
-        framesize = len(framedata)
+				framedata = ''.join(framedata)
+				framesize = len(framedata)
 
-        if filename is None: filename = self.filename
-        f = open(filename, 'rb+')
-        try:
-            idata = f.read(10)
-            try: id3, vmaj, vrev, flags, insize = unpack('>3sBBB4s', idata)
-            except struct.error: id3, insize = '', 0
-            insize = BitPaddedInt(insize)
-            if id3 != 'ID3': insize = -10
+				if filename is None: filename = self.filename
+				f = open(filename, 'rb+')
+				try:
+						idata = f.read(10)
+						try: id3, vmaj, vrev, flags, insize = unpack('>3sBBB4s', idata)
+						except struct.error: id3, insize = '', 0
+						insize = BitPaddedInt(insize)
+						if id3 != 'ID3': insize = -10
 
-            if insize >= framesize: outsize = insize
-            else: outsize = (framesize + 1023) & ~0x3FF
-            framedata += '\x00' * (outsize - framesize)
+						if insize >= framesize: outsize = insize
+						else: outsize = (framesize + 1023) & ~0x3FF
+						framedata += '\x00' * (outsize - framesize)
 
-            framesize = BitPaddedInt.to_str(outsize, width=4)
-            flags = 0
-            header = pack('>3sBBB4s', 'ID3', 4, 0, flags, framesize)
-            data = header + framedata
+						framesize = BitPaddedInt.to_str(outsize, width=4)
+						flags = 0
+						header = pack('>3sBBB4s', 'ID3', 4, 0, flags, framesize)
+						data = header + framedata
 
-            if (insize < outsize):
-                insert_bytes(f, outsize-insize, insize+10)
-            f.seek(0)
+						if (insize < outsize):
+								insert_bytes(f, outsize-insize, insize+10)
+						f.seek(0)
 
-            try:
-                f.seek(-128, 2)
-            except IOError, err:
-                from errno import EINVAL
-                if err.errno != EINVAL: raise
-                f.seek(0, 2) # ensure read won't get "TAG"
+						try:
+								f.seek(-128, 2)
+						except IOError, err:
+								from errno import EINVAL
+								if err.errno != EINVAL: raise
+								f.seek(0, 2) # ensure read won't get "TAG"
 
-            if f.read(3) == "TAG":
-                f.seek(-128, 2)
-                if v1 > 0: f.write(MakeID3v1(self))
-                else: f.truncate()
-            elif v1 == 2:
-                f.seek(0, 2)
-                f.write(MakeID3v1(self))
+						if f.read(3) == "TAG":
+								f.seek(-128, 2)
+								if v1 > 0: f.write(MakeID3v1(self))
+								else: f.truncate()
+						elif v1 == 2:
+								f.seek(0, 2)
+								f.write(MakeID3v1(self))
 
-        finally:
-            f.close()
+				finally:
+						f.close()
 
 class InterpolatedFLAC (FLAC):
+
+			def load(self, filedata):
+				self.metadata_blocks = []
+				self.tags = None
+				self.cuesheet = None
+				self.seektable = None
+				#self.filename = filename
+				self.filedata = filedata
+				self.fileobj = BytesIO(filedata)
+				self.__check_header(self.fileobj)
+
+				while self.__read_metadata_block(self.fileobj):
+						pass
+				if self.fileobj.read(2) not in ["\xff\xf8", "\xff\xf9"]:
+						raise FLACNoHeaderError("End of metadata did not start audio")
+
+				try:
+						self.metadata_blocks[0].length
+				except (AttributeError, IndexError):
+						raise FLACNoHeaderError("Stream info block not found")
+						
+				logging.info("Loaded INF")
+				
+			def __read_metadata_block(self, file):
+				byte = ord(file.read(1))
+				size = to_int_be(file.read(3))
+				try:
+						data = file.read(size)
+						if len(data) != size:
+								raise error(
+										"file said %d bytes, read %d bytes" % (size, len(data)))
+						block = self.METADATA_BLOCKS[byte & 0x7F](data)
+				except (IndexError, TypeError):
+						block = MetadataBlock(data)
+						block.code = byte & 0x7F
+						self.metadata_blocks.append(block)
+				else:
+						self.metadata_blocks.append(block)
+						if block.code == VCFLACDict.code:
+								if self.tags is None: self.tags = block
+								else: raise FLACVorbisError("> 1 Vorbis comment block found")
+						elif block.code == CueSheet.code:
+								if self.cuesheet is None: self.cuesheet = block
+								else: raise error("> 1 CueSheet block found")
+						elif block.code == SeekTable.code:
+								if self.seektable is None: self.seektable = block
+								else: raise error("> 1 SeekTable block found")
+				return (byte >> 7) ^ 1
+
 			def get_header(self, filename=None):
 				
-				if filename == None:
-					filename = self.filename
-					
-				f = open(filename, 'rb+')
+				f = self.fileobj
+				f.seek(0)
 
 				# Ensure we've got padding at the end, and only at the end.
 				# If adding makes it too large, we'll scale it down later.
@@ -302,10 +352,7 @@ class InterpolatedFLAC (FLAC):
 				if len(data) != available:
 						# We couldn't reduce the padding enough.
 						diff = (len(data) - available)
-						#insert_bytes(f, diff, header)
 						
-				f.close()
-
 				self.__offset = len("fLaC" + data)
 
 				return("fLaC" + data)	 
@@ -403,23 +450,31 @@ class FileHandler(object):
 		
 		# now get the bounds of the file_class
 		#TODO: this needs to handle other file formats; use mutagen's detection procedure
-		format = os.path.splitext(path)[1][1:].lower()
+		self.format = os.path.splitext(path)[1][1:].lower()
 		#logging.info(self.real_path)
-		if format == "flac":
-			self.inf = InterpolatedFLAC(self.real_path)
+		if self.format == "flac":
+			#self.inf = InterpolatedFLAC(self.real_path)
+			self.inf = InterpolatedFLAC(self.file_object.read())
 			
 			# get values from database
 			self.inf["title"] = self.item.title
 			self.inf["album"] = self.item.album
 			self.inf["artist"] = self.item.artist
 			self.inf["genre"] = self.item.genre
-			self.inf["track"] = self.item.track
 			
 			self.header = self.inf.get_header(self.real_path)
 			self.bound = len(self.header)
 			self.music_offset = self.inf.offset()
-		elif format == "mp3":
+			
+		elif self.format == "mp3":
 			self.bound = 0 # disable interpolation for now
+			self.music_offset = 0 # disable interpolation for now
+		
+		# read in the contents of the file
+		self.file_object.seek(self.music_offset)
+		self.music_data = self.file_object.read()
+		# close the file
+		self.file_object.close()
 		
 	def open(self):
 		# as init() handles actual opening, just increment instance count here
@@ -431,32 +486,69 @@ class FileHandler(object):
 			self.instance_count = self.instance_count - 1
 			return False
 		else:
-			# if instance count is zero, close the physical file on disk
-			self.file_object.close()
 			return True
-			
+
 	def read(self, size, offset):
 		# check if read is within header boundary
 		if offset < self.bound:
 			
 			if offset + size < len(self.header):
 			# can just read from header
+				logging.info("JUST HEADER")
 				ret = self.header[offset:offset+size]
 				return ret
 			else:
 				# get the header + some data from file
+				logging.info("HEADER + DATA")
 				ret = self.header[offset:len(self.header)]
-				self.file_object.seek(self.music_offset)
-				ret = ret + self.file_object.read(size-(len(self.header) - offset))
+				ret = ret + self.music_data[0:size - ((len(self.header) - offset))]
 				return ret
 		
 		# otherwise, pass read call to underlying file system
-		self.file_object.seek(offset)
-		return self.file_object.read(size)
+		#self.file_object.seek(offset)
+		logging.info("JUST MUSIC")
+		return self.music_data[offset - len(self.header):offset - len(self.header) + size]
 		
 	def write(self, offset, buf):
 		# determine if offset is within header; if not, discard write
+
 		if offset < self.bound:
+			# load interpolated file into memory
+
+			filedata = self.header + self.music_data
+
+			# patch in the new data
+			filedata2 = filedata[0:offset] + buf + filedata[offset + len(buf):]
+			filedata = filedata2
+	
+			# create a new normal mutagen object
+			if self.format == "flac":
+				try:
+					# now obtain a new Interpolated FLAC from the temporary file
+					self.inf = InterpolatedFLAC(filedata)
+
+					# instead of putting the values into the FLAC, extract the values
+					self.item.title = str(self.inf["title"][0]).encode('utf-8')					
+					self.item.album = str(self.inf["album"][0]).encode('utf-8')
+					self.item.artist = str(self.inf["artist"][0]).encode('utf-8')
+					self.item.genre = str(self.inf["genre"][0]).encode('utf-8')
+
+					self.lib.store(self.item)
+					self.lib.save()
+			
+					# get values from database
+					self.inf["title"] = self.item.title
+					self.inf["album"] = self.item.album
+					self.inf["artist"] = self.item.artist
+					self.inf["genre"] = self.item.genre
+			
+					self.header = self.inf.get_header(self.real_path)
+					self.bound = len(self.header)
+					self.music_offset = self.inf.offset()
+					
+					return len(buf)
+				except IOError:
+					logging.error("Couldn't update tag.")
 			pass
 					
 class Stat(fuse.Stat):
@@ -983,9 +1075,21 @@ class beetFileSystem(fuse.Fuse):
 				int, which is an errno code.
 				"""
 				logging.info("write: %s (offset %s, fh %s)" % (path, offset, fh))
-				logging.debug("	buf: %r" % buf)
+
+				if fh == None:
+					file_path = None
 				
-				return -errno.EOPNOTSUPP
+					try:
+						if self.files == None:
+							self.files = {"x":"y"}
+						self.files[path] = FileHandler(path, self.lib)
+					except:
+						return -errno.EPERM
+		
+				try:
+					return self.files[path].write(offset, buf)
+				except Exception as ex:
+					logging.info(ex)
 
 		def ftruncate(self, path, size, fh=None):
 				"""
